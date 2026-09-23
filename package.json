@@ -1,0 +1,33 @@
+{
+  "name": "pi-sync-subagent-tools",
+  "version": "1.0.0",
+  "description": "Synchronize available Pi tools to six custom subagent allowlists.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck extensions/sync-subagent-tools.ts"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CloudedQuartz/pi-sync-subagent-tools.git"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/sync-subagent-tools.ts"
+    ]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.87.1",
+    "@types/node": "^22.20.4",
+    "typescript": "^5.9.3"
+  }
+}
