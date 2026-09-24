@@ -24,5 +24,5 @@ In Pi's TUI, run `/sync-subagent-tools`. The command is deliberately unavailable
 All six agents currently have this identical managed line:
 
 ```text
-tools: advisor, ask_user_question, ast_grep_outline, ast_grep_replace, ast_grep_search, bash, document_parse, document_screenshot, document_search, edit, effective_config, fetch_content, find, get_search_content, grep, lens_diagnostic_mark, lens_diagnostics, ls, lsp_navigation, mcp, mcpScript, mcp__codebase_memory_mcp, module_report, pi_lens_activate_tools, powershell, preview_export, project_report, read, read_enclosing, read_symbol, source_check, symbol_search, todo, web_search, write
+tools: advisor, ask_user_question, ast_grep_outline, ast_grep_replace, ast_grep_search, bash, document_parse, document_screenshot, document_search, edit, effective_config, fetch_content, find, get_search_content, grep, lens_diagnostic_mark, lens_diagnostics, ls, lsp_navigation, module_report, pi_lens_activate_tools, powershell, preview_export, project_report, read, read_enclosing, read_symbol, source_check, symbol_search, todo, web_search, write
 ```
