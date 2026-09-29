@@ -1,19 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { open, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-export const AGENT_NAMES = [
-	"Adversarial",
-	"Bounded-advisor",
-	"Explore",
-	"Implement",
-	"Review",
-	"Verify",
-] as const;
-
-type AgentName = (typeof AGENT_NAMES)[number];
-type AgentContents = Record<AgentName, string>;
+type AgentContents = Record<string, string>;
 
 const BEGIN_MARKER = "# sync-subagent-tools:begin";
 const END_MARKER = "# sync-subagent-tools:end";
@@ -148,7 +138,20 @@ export function parseAgent(content: string, label = "<agent>"): ParsedAgent {
 	const markerLines = frontmatter
 		.map((line, index) => ({ line, index }))
 		.filter(({ line }) => markerLinePattern.test(line));
-	if (markerLines.length === 0) throw new Error(`${label}: managed sync markers are required`);
+	if (markerLines.length === 0) {
+		const enrolledLines = [...lines];
+		if (toolsLineIndex === null) {
+			const managedNames = parseToolNames(BOOTSTRAP_TOOL_NAMES.join(", "), label);
+			enrolledLines.splice(closeIndex, 0, BEGIN_MARKER, `tools: ${formatToolNames(managedNames)}`, END_MARKER);
+			return { ...split, lines: enrolledLines, managedNames };
+		}
+
+		const value = validateScalar(lines[toolsLineIndex].slice("tools:".length).trim(), label, toolsLineIndex + 1);
+		const managedNames = parseToolNames(value, label);
+		enrolledLines.splice(toolsLineIndex, 0, BEGIN_MARKER);
+		enrolledLines.splice(toolsLineIndex + 2, 0, END_MARKER);
+		return { ...split, lines: enrolledLines, managedNames };
+	}
 	if (
 		markerLines.length !== 2 ||
 		markerLines[0].line !== BEGIN_MARKER ||
@@ -177,8 +180,28 @@ function normalizedNames(names: readonly string[], label: string): string[] {
 	return [...unique].filter((name) => !FORCED_EXCLUSIONS.has(name));
 }
 
+function compareNames(left: string, right: string): number {
+	return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function validateAgentNames(names: readonly string[], label: string): string[] {
+	if (names.length === 0) throw new Error(`${label}: no agent names were found`);
+	const orderedNames = [...names].sort(compareNames);
+	const seen = new Map<string, string>();
+	for (const name of orderedNames) {
+		if (!name) throw new Error(`${label}: agent names must be nonempty`);
+		const normalized = name.toLowerCase();
+		const existing = seen.get(normalized);
+		if (existing !== undefined) {
+			throw new Error(`${label}: agent names ${JSON.stringify(existing)} and ${JSON.stringify(name)} collide case-insensitively`);
+		}
+		seen.set(normalized, name);
+	}
+	return orderedNames;
+}
+
 function sortedUnion(...groups: readonly string[][]): string[] {
-	return [...new Set(groups.flat())].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+	return [...new Set(groups.flat())].sort(compareNames);
 }
 
 function formatToolNames(names: readonly string[]): string {
@@ -206,24 +229,20 @@ export function prepareSync(
 	contents: Readonly<Record<string, string>>,
 	availableToolNames: readonly string[],
 ): { contents: AgentContents; toolNames: string[] } {
-	const providedNames = Object.keys(contents).sort();
-	const expectedNames = [...AGENT_NAMES].sort();
-	if (providedNames.length !== expectedNames.length || providedNames.some((name, index) => name !== expectedNames[index])) {
-		throw new Error(`Expected exactly these six agent files: ${AGENT_NAMES.join(", ")}`);
-	}
+	const agentNames = validateAgentNames(Object.keys(contents), "Agent files");
 
 	// Parse every file and validate the live catalog before constructing any writes.
 	const parsed = Object.fromEntries(
-		AGENT_NAMES.map((name) => [name, parseAgent(contents[name], `${name}.md`)]),
-	) as Record<AgentName, ParsedAgent>;
+		agentNames.map((name) => [name, parseAgent(contents[name], `${name}.md`)]),
+	) as Record<string, ParsedAgent>;
 	const available = normalizedNames(availableToolNames, "Pi tool catalog");
-	const existingManaged = AGENT_NAMES.flatMap((name) => parsed[name].managedNames);
+	const existingManaged = agentNames.flatMap((name) => parsed[name].managedNames);
 	const toolNames = sortedUnion([...BOOTSTRAP_TOOL_NAMES], existingManaged, available)
 		.filter((name) => !FORCED_EXCLUSIONS.has(name));
 	const updated = Object.fromEntries(
-		AGENT_NAMES.map((name) => [name, replaceManagedTools(parsed[name], toolNames)]),
+		agentNames.map((name) => [name, replaceManagedTools(parsed[name], toolNames)]),
 	) as AgentContents;
-	for (const name of AGENT_NAMES) {
+	for (const name of agentNames) {
 		const roundTrippedNames = parseAgent(updated[name], `${name}.md`).managedNames;
 		if (roundTrippedNames.length !== toolNames.length || roundTrippedNames.some((toolName, index) => toolName !== toolNames[index])) {
 			throw new Error(`${name}.md: generated managed tools list failed round-trip validation`);
@@ -312,20 +331,30 @@ export async function writeAgentFileAtomically(
 
 const AGENT_DIRECTORY = join(getAgentDir(), "agents");
 
+async function discoverAgentNames(directory: string): Promise<string[]> {
+	const entries = await readdir(directory, { withFileTypes: true });
+	const names = entries
+		.filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+		.map((entry) => entry.name.slice(0, -".md".length));
+	if (names.length === 0) throw new Error(`${directory}: no direct regular .md agent files found`);
+	return validateAgentNames(names, directory);
+}
+
 export default function (pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, sessionCtx) => {
 		// pi-subagents children and print-mode parents are deliberately excluded.
 		if (!isSyncAllowedMode(sessionCtx.mode)) return;
 
 		pi.registerCommand("sync-subagent-tools", {
-			description: "Sync all six custom subagent tool allowlists (TUI parent only; print parents are deliberately excluded)",
+			description: "Sync managed tool allowlists for direct global agent .md files (TUI parent only; print parents are deliberately excluded)",
 			handler: async (_args, ctx) => {
 				if (!isSyncAllowedMode(ctx.mode)) return;
 
-				const updatedAgents: AgentName[] = [];
+				const updatedAgents: string[] = [];
 				try {
+					const agentNames = await discoverAgentNames(AGENT_DIRECTORY);
 					const pairs = await Promise.all(
-						AGENT_NAMES.map(async (name) => [
+						agentNames.map(async (name) => [
 							name,
 							await readFile(join(AGENT_DIRECTORY, `${name}.md`), "utf8"),
 						] as const),
@@ -334,14 +363,14 @@ export default function (pi: ExtensionAPI): void {
 					const catalog = pi.getAllTools().map((tool) => tool.name);
 					const result = prepareSync(originals, catalog);
 
-					for (const name of AGENT_NAMES) {
+					for (const name of agentNames) {
 						if (result.contents[name] !== originals[name]) {
 							const agentPath = join(AGENT_DIRECTORY, `${name}.md`);
 							await writeAgentFileAtomically(agentPath, originals[name], result.contents[name]);
 							updatedAgents.push(name);
 						}
 					}
-					ctx.ui.notify(`Synced ${result.toolNames.length} tools to ${AGENT_NAMES.length} agents.`, "info");
+					ctx.ui.notify(`Synced ${result.toolNames.length} tools to ${agentNames.length} agents.`, "info");
 				} catch (error) {
 					const message = errorMessage(error);
 					const progress = updatedAgents.length > 0

@@ -1,10 +1,9 @@
 {
   "name": "pi-sync-subagent-tools",
   "version": "1.0.0",
-  "description": "Synchronize available Pi tools to six custom subagent allowlists.",
+  "description": "Synchronize available Pi tools to every discovered global agent allowlist.",
   "type": "module",
   "scripts": {
-    "test": "node --test",
     "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck extensions/sync-subagent-tools.ts"
   },
   "keywords": [
