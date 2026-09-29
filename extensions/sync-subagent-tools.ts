@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { open, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	getAgentDir,
+	parseFrontmatter,
+	type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
 
 type AgentContents = Record<string, string>;
 
@@ -331,13 +335,38 @@ export async function writeAgentFileAtomically(
 
 const AGENT_DIRECTORY = join(getAgentDir(), "agents");
 
-async function discoverAgentNames(directory: string): Promise<string[]> {
+// Opt-outs are read with a real YAML parser, because definitions that the tool
+// sync must not touch (a main preset with a nested model, a fixed tool list) are
+// exactly the ones the strict scalar parser below rejects. Main-agent presets are
+// skipped by their own `type`, and no agent is named here.
+function optsOutOfSync(content: string): boolean {
+	let frontmatter: unknown;
+	try {
+		({ frontmatter } = parseFrontmatter(content));
+	} catch {
+		return false; // malformed YAML is left to the strict parser to report
+	}
+	if (typeof frontmatter !== "object" || frontmatter === null) return false;
+	const fields = frontmatter as Record<string, unknown>;
+	if (fields.type === "main" || fields.type === "both") return true;
+	return fields.enabled === false || fields.sync_tools === false;
+}
+
+async function discoverAgents(directory: string): Promise<Record<string, string>> {
 	const entries = await readdir(directory, { withFileTypes: true });
 	const names = entries
 		.filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
 		.map((entry) => entry.name.slice(0, -".md".length));
 	if (names.length === 0) throw new Error(`${directory}: no direct regular .md agent files found`);
-	return validateAgentNames(names, directory);
+	const agents: Record<string, string> = {};
+	for (const name of validateAgentNames(names, directory)) {
+		const content = await readFile(join(directory, `${name}.md`), "utf8");
+		if (!optsOutOfSync(content)) agents[name] = content;
+	}
+	if (Object.keys(agents).length === 0) {
+		throw new Error(`${directory}: every agent definition opted out of tool sync`);
+	}
+	return agents;
 }
 
 export default function (pi: ExtensionAPI): void {
@@ -352,14 +381,8 @@ export default function (pi: ExtensionAPI): void {
 
 				const updatedAgents: string[] = [];
 				try {
-					const agentNames = await discoverAgentNames(AGENT_DIRECTORY);
-					const pairs = await Promise.all(
-						agentNames.map(async (name) => [
-							name,
-							await readFile(join(AGENT_DIRECTORY, `${name}.md`), "utf8"),
-						] as const),
-					);
-					const originals = Object.fromEntries(pairs) as AgentContents;
+					const originals = await discoverAgents(AGENT_DIRECTORY);
+					const agentNames = Object.keys(originals);
 					const catalog = pi.getAllTools().map((tool) => tool.name);
 					const result = prepareSync(originals, catalog);
 
